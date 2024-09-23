@@ -6,13 +6,21 @@ The old-version folder has the back-up.
 import math
 import numpy as np
 import pandas as pd
+import time
+import matplotlib.pyplot as plt
 from sklearn.model_selection import KFold
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, matthews_corrcoef, roc_auc_score, roc_curve
+import utils1
+import tensorflow as tf
 from imblearn.over_sampling import SMOTE
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, Dropout
+from tensorflow.keras.layers import Dense, Dropout, BatchNormalization
 from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.callbacks import EarlyStopping
+from tensorflow.keras.callbacks import ReduceLROnPlateau
+from tensorflow.keras.utils import to_categorical
+
+tf.debugging.set_log_device_placement(False)
+
 from abc import ABC, abstractmethod
 
 # Base classifier class
@@ -34,27 +42,42 @@ class SeeSawingWeights(Classifier):
         self.loc_weight = 0.0
         self.f_global = f_global
         self.f_local = f_local
+        self.inflection_point = 0
+        self.convergence_number = 25
+        self.loss = []
         
     def fit(self, X, y):
+        start_time = time.time()
         lr = 1/len(X)
         self.ser_weight = self.f_global / (self.f_global + self.f_local)
         self.loc_weight = self.f_local / (self.f_global + self.f_local)
+        self.loss = []
 
         for cur in range(self.epoch):
-            lr *= math.exp(-cur)
+            loss = 0
+            # LAEARNING RATE SCHEDULER
+            # lr = self.scheduler(lr, math.exp(-cur), 3)
+            lr *= math.exp(-cur/self.convergence_number)
             test_array = []
-            how_many_case_wrong = 0
 
             for index, row in X.iterrows():
                 yes_prob = self.ser_weight*row.iloc[0] + self.loc_weight*row.iloc[2]
                 no_prob = self.ser_weight*row.iloc[1] + self.loc_weight*row.iloc[3]
-                if (yes_prob >= no_prob and y[index] == 0) or (yes_prob < no_prob and y[index] == 1):
-                    how_many_case_wrong += 1
 
-            for index, row in X.iterrows():
-                yes_prob = self.ser_weight*row.iloc[0] + self.loc_weight*row.iloc[2]
-                no_prob = self.ser_weight*row.iloc[1] + self.loc_weight*row.iloc[3]
-                if ((yes_prob >= no_prob and y[index] == 0) or (yes_prob < no_prob and y[index] == 1)):
+                if (yes_prob >= no_prob and y[index] == 0):
+                    predict_correct = False
+                    loss+=yes_prob
+                elif (yes_prob < no_prob and y[index] == 1):
+                    predict_correct = False
+                    loss+=no_prob      
+                elif (yes_prob >= no_prob and y[index] == 1):
+                    predict_correct = True
+                    loss+=no_prob
+                elif (yes_prob < no_prob and y[index] == 0):
+                    predict_correct = True
+                    loss+=yes_prob
+
+                if ((not predict_correct) or (cur<self.inflection_point)):
                     cg = row.iloc[0] if y[index] == 1 else row.iloc[1]
                     cl = row.iloc[2] if y[index] == 1 else row.iloc[3]
                     epsilon_global = math.ceil(max(row.iloc[0], row.iloc[1]) - cg)
@@ -83,17 +106,42 @@ class SeeSawingWeights(Classifier):
                         self.ser_weight -= delta_weights
                         self.loc_weight += delta_weights
 
-            # print(f"Round {cur} delta weights:", np.average(test_array))
+            self.loss.append(loss)
+
 
         print("New server weights:", self.ser_weight)
         print("New local weights:", self.loc_weight)
+
+        plt.plot(np.arange(self.epoch), self.loss)
+        plt.title('Model loss -- seesawing weights')
+        plt.ylabel('Loss')
+        plt.xlabel('Epoch')
+        plt.legend(['Train'], loc = 'upper left')
+        plt.show()
+
+        end_time = time.time()
+        execution_time = end_time - start_time
+        return execution_time
+
+
+    def scheduler(self, learning_rate, factor, penalty):
+        if len(self.loss) > penalty:
+            not_improving = 0
+            for i in range(penalty):
+                if self.loss[-1 - i] >= self.loss[-2 - i]: 
+                    not_improving += 1
+
+            if not_improving > penalty / 2:
+                return learning_rate * factor
+        
+        return learning_rate
+
 
     def predict(self, X, y_test):
         y = []
         pred_prob = []
         for index, row in X.iterrows():
             yes_prob = self.ser_weight * row.iloc[0] + self.loc_weight * row.iloc[2]
-            no_prob = self.ser_weight * row.iloc[1] + self.loc_weight * row.iloc[3]
             pred_prob.append(yes_prob)
 
         fpr, tpr, threshold = roc_curve(y_test, pred_prob)
@@ -119,39 +167,47 @@ class NeuralNetwork(Classifier):
         self.epoch = epoch
         self.learning_rate = learning_rate
         self.model = Sequential()
-        self.model.add(Dense(128, input_shape=(4,), activation='relu'))
-        self.model.add(Dropout(0.5))
-        self.model.add(Dense(64, activation='relu'))
-        self.model.add(Dropout(0.5))
-        self.model.add(Dense(32, activation='relu'))
-        self.model.add(Dropout(0.5))
-        self.model.add(Dense(16, activation='relu'))
-        self.model.add(Dense(1, activation='sigmoid'))
-        self.model.compile(optimizer=Adam(learning_rate=self.learning_rate), loss='binary_crossentropy', metrics=['accuracy'])
+        self.model.add(Dense(12, activation='relu', input_shape=(4,)))
+        self.model.add(BatchNormalization())
+        self.model.add(Dense(6, activation='relu'))
+        self.model.add(BatchNormalization())
+        self.model.add(Dropout(0.2))
+        self.model.add(Dense(2, activation='softmax'))
+        self.model.compile(optimizer=Adam(learning_rate=self.learning_rate), loss="categorical_crossentropy", metrics=['accuracy'])
+
 
     def fit(self, X, y):
-        smote = SMOTE()
-        X, y = smote.fit_resample(X, y)
-        class_weights = {0: 1, 1: 3}
-        self.model.fit(X, y, epochs=self.epoch, class_weight=class_weights, callbacks=[EarlyStopping(monitor='loss', patience=5)])
+        start_time = time.time()
+
+        beta = 0.999
+        class_weights = utils1.get_class_balanced_weights(y, beta)
+        lr_scheduler = ReduceLROnPlateau(monitor='loss', factor=0.5, patience=5, min_lr=0.00005)
+        history = self.model.fit(X, to_categorical(y, num_classes=2), epochs=self.epoch, class_weight=class_weights, callbacks=[lr_scheduler])
+
+        plt.plot(history.history['loss'])
+        plt.title('Model loss -- NN network')
+        plt.ylabel('Loss')
+        plt.xlabel('Epoch')
+        plt.legend(['Train'], loc = 'upper left')
+        plt.show()
+
+        end_time = time.time()
+        execution_time = end_time - start_time
+        return execution_time
 
     def predict(self, X, y_test):
         pred_prob = self.model.predict(X)
-        fpr, tpr, threshold = roc_curve(y_test, pred_prob)
-        optimal_index1 = np.argmax(tpr - fpr)
-        y = [1 if prob >= threshold[optimal_index1] else 0 for prob in pred_prob]
-
+        y = [1 if prob[1] >= prob[0] else 0 for prob in pred_prob]
         return y
 
     def predict_proba(self, X):
         prob = self.model.predict(X)
-        return prob
+        return prob[:,1]
 
-def evaluate_model(model, X_test, y_test):
+
+def evaluate_model(model, X_test, y_test, training_time):
     predictions = model.predict(X_test, y_test)
     proba = model.predict_proba(X_test)
-
-    print(proba)
 
     if np.sum(y_test):
         accuracy = accuracy_score(y_test, predictions)
@@ -169,6 +225,7 @@ def evaluate_model(model, X_test, y_test):
         'precision': precision,
         'recall': recall,
         'mcc': mcc,
+        # 'training time': training_time,
         'auc': auc
     }
 
@@ -180,12 +237,12 @@ def main():
     X_train, y_train = df.drop('Outcome', axis=1), df['Outcome']
 
     df_init = pd.read_csv(f'init_{institution}.csv')
-    f_global = df_init['f1 global'].iloc[0]
-    f_local = df_init['f1 local'].iloc[0]
+    f_global = df_init['global auc'].iloc[0]
+    f_local = df_init['local auc'].iloc[0]
 
     models = {
-        'SSW': SeeSawingWeights(epoch=40, f_global=f_global, f_local=f_local),
-        'NNs': NeuralNetwork(epoch=50, learning_rate=0.001)
+        # 'SSW': SeeSawingWeights(epoch = 30, f_global = f_global, f_local = f_local),
+        'NNs': NeuralNetwork(epoch = 300, learning_rate = 0.003)
     }
 
     kf = KFold(n_splits=4, random_state=42, shuffle=True)
@@ -196,8 +253,8 @@ def main():
             X_train_fold, X_val_fold = X_train.iloc[train_index], X_train.iloc[val_index]
             y_train_fold, y_val_fold = y_train.iloc[train_index], y_train.iloc[val_index]
 
-            model.fit(X_train_fold, y_train_fold)
-            fold_result = evaluate_model(model, X_val_fold, y_val_fold)
+            training_time = model.fit(X_train_fold, y_train_fold)
+            fold_result = evaluate_model(model, X_val_fold, y_val_fold, training_time)
             fold_result['model'] = name
             fold_result['fold'] = fold_idx
             cv_results.append(fold_result)
@@ -211,8 +268,8 @@ def main():
     print("Cross-validation results:")
     print(all_results_df)
 
-    all_results_df.to_csv('Results/cv_results.csv', index=False)
-    print("Cross-validation results with averages saved to cv_results.csv")
+    # all_results_df.to_csv('Results/cv_results.csv', index=False)
+    # print("Cross-validation results with averages saved to cv_results.csv")
 
 if __name__ == "__main__":
     main()

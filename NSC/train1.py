@@ -12,14 +12,17 @@ from keras import metrics
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense, Dropout
 from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.layers import BatchNormalization
+from tensorflow.keras.callbacks import ReduceLROnPlateau
+from tensorflow.keras.utils import to_categorical
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import fbeta_score, roc_curve, roc_auc_score
 from imblearn.over_sampling import SMOTE
 import matplotlib.pyplot as plt
-import utils
+import utils1
 import shap
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+tf.debugging.set_log_device_placement(False)
 
 '''''''''''''''''''''''''''''''''' Feature Groups '''''''''''''''''''''''''''''''''''''''
 
@@ -77,7 +80,7 @@ def featureIntepreter(model, x_train, institution):
     plt.show()
 
 
-def federated_learning(x_train, y_train, x_test, y_test, institution):
+def federated_learning(x_train, y_train, x_test, y_test, institution, class_weights):
 
     x_train = x_train[global_feature]
     x_test = x_test[global_feature]
@@ -98,46 +101,39 @@ def federated_learning(x_train, y_train, x_test, y_test, institution):
     x_train = x_train[global_feature_en]
     x_test = x_test[global_feature_en]
 
-    # Load and compile Keras model
-    model = Sequential() 
-    model.add(Dense(128, activation='relu', input_shape=(x_train.shape[1],)))
-    model.add(Dropout(0.5))
-    model.add(Dense(64, activation='relu'))
-    model.add(Dropout(0.5))
-    model.add(Dense(32, activation='relu'))
-    model.add(Dropout(0.5))
-    model.add(Dense(16, activation='relu'))
-    model.add(Dense(1, activation='sigmoid'))
 
-    model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+    # Load and compile Keras model
+    opt_adam = Adam(learning_rate = 0.003)
+    model = Sequential() 
+    model.add(Dense(12, activation = 'relu', input_shape = (x_train.shape[1],))) 
+    model.add(BatchNormalization())
+    model.add(Dense(6, activation = 'relu'))
+    model.add(BatchNormalization())
+    model.add(Dropout(0.2))
+    model.add(Dense(2, activation = 'softmax'))
+    model.compile(optimizer = opt_adam, loss = "categorical_crossentropy", metrics = ['accuracy'])
 
     # Start Flower client
-    client_hospital = utils.SpcancerClient(model, x_train, y_train, x_test, y_test)
+    client_hospital = utils1.SpcancerClient(model, x_train, y_train, x_test, y_test, class_weights)
     fl.client.start_numpy_client("127.0.0.1:6000", client=client_hospital)
 
     pred_prob = model.predict(x_test.astype(float))
+    auc = roc_auc_score(y_test, pred_prob[:, 1])
+    print(f"Global model auc score: {auc}")
 
-    # Calculating f1_score
-    fpr, tpr, threshold = roc_curve(y_test, pred_prob)
-    optimal_index = np.argmax(tpr - fpr)
-    y_pred = (pred_prob >= threshold[optimal_index]).astype(int)
-    f1 = fbeta_score(y_test, y_pred, beta=2)
-    
-    # model.save("Global_Model")
-    print(f"Global model auc score: {roc_auc_score(y_score=y_pred, y_true=y_test)}")
+    # featureIntepreter(model, x_train.astype(np.int32), institution)
 
-    featureIntepreter(model, x_train.astype(np.int32), institution)
-
-    return f1, pred_prob, y_pred
+    return auc, pred_prob
 
 
-
-def centralized_learning(x_train, y_train, x_test, y_test, institution):
+def centralized_learning(x_train, y_train, x_test, y_test, institution, class_weights):
  
-    col_exclude_tw = []
-    col_exclude_seer = []
+    col_exclude_tw = ['Radiation', 'Chemotherapy', 'Surgery']
+    col_exclude_seer = ['Radiation', 'Chemotherapy', 'Surgery']
 
-    local_feature = list(taiwan_feature) if institution == 1 else list(seer_feature)
+    local_feature = list(global_feature)
+    local_feature += (list(taiwan_feature) if institution == 1 else list(seer_feature))
+
     columns_exclude = list(col_exclude_tw) if institution == 1 else list(col_exclude_seer)
 
     x_train = x_train[local_feature]
@@ -152,34 +148,35 @@ def centralized_learning(x_train, y_train, x_test, y_test, institution):
     dfencode = pd.concat([dfencode, x_test])
     x_test = pd.get_dummies(dfencode, drop_first=False, columns=[col for col in local_feature if col not in columns_exclude])
 
-    # Load and compile Keras model
-    model = Sequential() 
-    model.add(Dense(128, activation='relu', input_shape=(x_train.shape[1],)))
-    model.add(Dropout(0.5))
-    model.add(Dense(64, activation='relu'))    
-    model.add(Dropout(0.5))
-    model.add(Dense(32, activation='relu'))
-    model.add(Dropout(0.5))
-    model.add(Dense(16, activation='relu'))
-    model.add(Dense(1, activation='sigmoid'))
-    model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
 
-    class_weights = {0: 1, 1: 10000}
-    model.fit(x_train, y_train, epochs=40, class_weight=class_weights)
+    # Load and compile Keras model
+    opt_adam = Adam(learning_rate = 0.003)
+    model = Sequential() 
+    model.add(Dense(12, activation = 'relu', input_shape = (x_train.shape[1],))) 
+    model.add(BatchNormalization())
+    model.add(Dense(6, activation = 'relu'))
+    model.add(BatchNormalization())
+    model.add(Dropout(0.2))
+    model.add(Dense(2, activation = 'softmax'))
+    model.compile(optimizer = opt_adam, loss = "categorical_crossentropy", metrics = ['accuracy'])
+
+    lr_scheduler = ReduceLROnPlateau(monitor='loss', factor=0.5, patience=5, min_lr=0.000005)
+    history = model.fit(x_train.astype(float), y_train, epochs = 300, class_weight = class_weights, callbacks=[lr_scheduler])
+
+    plt.plot(history.history['loss'])
+    plt.title('Model loss -- centralized learning')
+    plt.ylabel('Loss')
+    plt.xlabel('Epoch')
+    plt.legend(['Train'], loc = 'upper left')
+    plt.show()
 
     pred_prob = model.predict(x_test.astype(float))
+    auc = roc_auc_score(y_test, pred_prob[:, 1])
+    print(f"Local model AUC score: {auc}")
 
-    # Calculating f1_score
-    fpr, tpr, threshold = roc_curve(y_test, pred_prob)
-    optimal_index = np.argmax(tpr-fpr)
-    y_pred = (pred_prob >= threshold[optimal_index]).astype(int)
-    f1 = fbeta_score(y_test, y_pred, beta=2)
+    # featureIntepreter(model, x_train.astype(np.int32), institution)
 
-    print(f"Local model AUC score: {roc_auc_score(y_score=y_pred, y_true=y_test)}")
-
-    featureIntepreter(model, x_train.astype(np.int32), institution)
-
-    return f1, pred_prob, y_pred
+    return auc, pred_prob
 
 
 def main() -> None:  
@@ -200,6 +197,8 @@ def main() -> None:
 
     x_train, y_train = trainset.drop(columns=['Target']), trainset['Target']
     x_test, y_test = testset.drop(columns=['Target']), testset['Target']
+    y_train_one_hot = to_categorical(y_train, num_classes=2)
+
 
     print(f'------------------------{f"Name of your Institution: {institution}"}------------------------')
     print(f"x_train (data number, feature number): {x_train.shape}")
@@ -207,30 +206,34 @@ def main() -> None:
     print(f'The number of true cases in y_train:  {(y_train == 1).sum()}')
     print(f'The number of true cases in y_test:  {(y_test == 1).sum()}')
 
-    f1_global, fed_prob, y_fed = federated_learning(x_train, y_train, x_test, y_test, institution)
-    f1_local, cen_prob, y_cen = centralized_learning(x_train, y_train, x_test, y_test, institution)
+    # class weights
+    beta = 0.999
+    class_weights = utils1.get_class_balanced_weights(y_train, beta)
 
-    if(np.sum(y_cen)>0 and np.sum(y_fed)>0):
-        f1 = {
-            'f1 global': np.array(f1_global).astype(float),
-            'f1 local': np.array(f1_local).astype(float)
-        }
-        f1_csv = pd.DataFrame(f1, index=[0])
-        print(f1_csv)
-        f1_csv.to_csv(f"init_{institution}.csv",index=False)
+    auc_global, fed_prob = federated_learning(x_train, y_train_one_hot, x_test, y_test, institution, class_weights)
+    auc_local, cen_prob = centralized_learning(x_train, y_train_one_hot, x_test, y_test, institution, class_weights)
 
-        result = {
-            'global model predict yes prob': fed_prob.reshape(-1,),
-            'global model predict no prob': np.array([1 - prob for prob in fed_prob.reshape(-1,)]),
-            'local model predict yes prob': cen_prob.reshape(-1,),
-            'local model predict no prob': np.array([1 - prob for prob in cen_prob.reshape(-1,)]),
-            'Outcome': y_test
-        }
 
-        middle = pd.DataFrame(result)
-        middle.to_csv(f"middle_{institution}.csv",index=False)
-    else:
-        print("Your model just predicts all zeros. Please train both your models again or enlarge your test set")
+    auc = {
+        'global auc': np.array(auc_global).astype(float),
+        'local auc': np.array(auc_local).astype(float)
+    }
+
+    auc_csv = pd.DataFrame(auc, index=[0])
+    print(auc_csv)
+    auc_csv.to_csv(f"init_{institution}.csv",index=False)
+
+    result = {
+        'global model predict yes prob': fed_prob[:,1],
+        'global model predict no prob': fed_prob[:,0],
+        'local model predict yes prob': cen_prob[:,1],
+        'local model predict no prob': cen_prob[:,0],
+        'Outcome': y_test
+    }
+
+    middle = pd.DataFrame(result)
+    middle.to_csv(f"middle_{institution}.csv",index=False)
+
 
 
 if __name__ == "__main__":
