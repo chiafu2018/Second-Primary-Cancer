@@ -1,7 +1,6 @@
-NSC/__pycache__
+NSC/__pycache__/
 NSC/centralized-learning/__pycache__/
 NSC/centralized-learning/Model/
-NSC/Data_folder
+NSC/Data_folder/
 NSC/大專生研究計畫/*.docx
-NSC/Data_folder
 utils/*.csv
