@@ -1,16 +1,10 @@
 import flwr as fl
-import numpy as np
-import pandas as pd
-import tensorflow as tf
-from keras import metrics
+import argparse
 from collections import Counter
 import matplotlib.pyplot as plt
-from sklearn.metrics import roc_auc_score, fbeta_score, roc_curve
-from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.callbacks import EarlyStopping
+from sklearn.metrics import roc_auc_score
 from tensorflow.keras.callbacks import ReduceLROnPlateau
 from tensorflow.keras.utils import to_categorical
-
 
 
 class SpcancerClient(fl.client.NumPyClient):
@@ -35,12 +29,7 @@ class SpcancerClient(fl.client.NumPyClient):
         lr_scheduler = ReduceLROnPlateau(monitor='loss', factor=0.5, patience=5, min_lr=0.000005)
         history = self.model.fit(self.x_train, self.y_train, epochs=epochs, class_weight=self.class_weights, callbacks=[lr_scheduler])
 
-        plt.plot(history.history['loss'])
-        plt.title('Model loss -- federated learning')
-        plt.ylabel('Loss')
-        plt.xlabel('Epoch')
-        plt.legend(['Train'], loc = 'upper left')
-        plt.show()
+        # draw_loss_function(history=history, name="federated learning")
 
         # Return updated model parameters and results
         results = {
@@ -70,13 +59,33 @@ class SpcancerClient(fl.client.NumPyClient):
 def get_class_balanced_weights(y_train, beta):
     # Count the number of samples for each class
     class_counts = Counter(y_train)
-    total_samples = len(y_train)
 
     # Calculate the effective number for each class
     effective_num = {}
     for class_label, count in class_counts.items():
         effective_num[class_label] = (1 - beta**count) / (1 - beta)
-    
+
     # Calculate the class-balanced weight
-    class_weights = {class_label: total_samples / (len(class_counts) * effective_num[class_label]) for class_label in class_counts}
+    class_weights = {class_label: (1 / effective_num[class_label]) for class_label in class_counts}
     return class_weights
+
+
+def draw_loss_function(history, name):
+    try:
+        plt.plot(history.history['loss'])
+    except:
+        plt.plot(history[0], history[1]) #adding this for seesawing weights 
+
+    plt.title(f'Model loss -- {name}')
+    plt.ylabel('Loss')
+    plt.xlabel('Epoch')
+    plt.legend(['Train'], loc = 'upper left')
+    plt.show()
+
+
+def parse_argument_for_running_script():
+    parser = argparse.ArgumentParser(description="Training Script for a Federated Learning Model")
+    parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility')
+    parser.add_argument('--hospital', type=int, default=1, help='Hospital Data for training')
+    args = parser.parse_args()
+    return args.seed, args.hospital

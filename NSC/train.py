@@ -3,7 +3,6 @@ import flwr as fl
 import numpy as np
 import pandas as pd
 import tensorflow as tf
-from keras import metrics
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense, Dropout
 from tensorflow.keras.optimizers import Adam
@@ -11,13 +10,15 @@ from tensorflow.keras.layers import BatchNormalization
 from tensorflow.keras.callbacks import ReduceLROnPlateau
 from tensorflow.keras.utils import to_categorical
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import fbeta_score, roc_curve, roc_auc_score
-from imblearn.over_sampling import SMOTE
+from sklearn.metrics import roc_auc_score
 import matplotlib.pyplot as plt
 import utils
 import shap
 
-tf.debugging.set_log_device_placement(False)
+# tf.debugging.set_log_device_placement(False)
+os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+
+
 
 '''''''''''''''''''''''''''''''''' Feature Groups '''''''''''''''''''''''''''''''''''''''
 
@@ -75,6 +76,7 @@ def featureIntepreter(model, x_train, institution):
     plt.show()
 
 
+
 def federated_learning(x_train, y_train, x_test, y_test, institution, class_weights):
 
     x_train = x_train[global_feature]
@@ -110,7 +112,7 @@ def federated_learning(x_train, y_train, x_test, y_test, institution, class_weig
 
     # Start Flower client
     client_hospital = utils.SpcancerClient(model, x_train, y_train, x_test, y_test, class_weights)
-    fl.client.start_numpy_client("127.0.0.1:6000", client=client_hospital)
+    fl.client.start_numpy_client("127.0.0.1:6001", client=client_hospital)
 
     pred_prob = model.predict(x_test.astype(float))
     auc = roc_auc_score(y_test, pred_prob[:, 1])
@@ -135,13 +137,8 @@ def centralized_learning(x_train, y_train, x_test, y_test, institution, class_we
     x_test = x_test[local_feature]
 
     # One hot encoding 
-    dfencode = pd.DataFrame()
-    dfencode = pd.concat([dfencode, x_train])
-    x_train = pd.get_dummies(dfencode, drop_first=False, columns=[col for col in local_feature if col not in columns_exclude])
-
-    dfencode = pd.DataFrame()
-    dfencode = pd.concat([dfencode, x_test])
-    x_test = pd.get_dummies(dfencode, drop_first=False, columns=[col for col in local_feature if col not in columns_exclude])
+    x_train = pd.get_dummies(x_train, drop_first=False, columns=[col for col in local_feature if col not in columns_exclude])
+    x_test = pd.get_dummies(x_test, drop_first=False, columns=[col for col in local_feature if col not in columns_exclude])
 
 
     # Load and compile Keras model
@@ -158,12 +155,7 @@ def centralized_learning(x_train, y_train, x_test, y_test, institution, class_we
     lr_scheduler = ReduceLROnPlateau(monitor='loss', factor=0.5, patience=5, min_lr=0.000005)
     history = model.fit(x_train.astype(float), y_train, epochs = 300, class_weight = class_weights, callbacks=[lr_scheduler])
 
-    plt.plot(history.history['loss'])
-    plt.title('Model loss -- centralized learning')
-    plt.ylabel('Loss')
-    plt.xlabel('Epoch')
-    plt.legend(['Train'], loc = 'upper left')
-    plt.show()
+    # utils.draw_loss_function(history=history, name="centralized learning")
 
     pred_prob = model.predict(x_test.astype(float))
     auc = roc_auc_score(y_test, pred_prob[:, 1])
@@ -175,8 +167,16 @@ def centralized_learning(x_train, y_train, x_test, y_test, institution, class_we
 
 
 def main() -> None:  
-    columns = list(global_feature)
+    '''
+    If you use the script to run this program, where you can test multiple seeds per time. You need to comment 
     institution = int(input("Please choose a hospital: 1 for Taiwan, 2 for US (SEER Database): "))
+    Otherwise, you need to comment, where you can only test for one seed.
+    seed, institution = utils.parse_argument_for_running_script()
+    '''
+    seed, institution = utils.parse_argument_for_running_script()
+    # institution = int(input("Please choose a hospital: 1 for Taiwan, 2 for US (SEER Database): "))
+
+    columns = list(global_feature)
 
     if institution == 1:
         columns.extend(taiwan_feature)
@@ -188,7 +188,7 @@ def main() -> None:
     columns.append('Target')
     df = df[columns]
 
-    trainset, testset = train_test_split(df, test_size=0.4, stratify=df['Target'], random_state=42)
+    trainset, testset = train_test_split(df, test_size=0.4, stratify=df['Target'], random_state=seed)
 
     x_train, y_train = trainset.drop(columns=['Target']), trainset['Target']
     x_test, y_test = testset.drop(columns=['Target']), testset['Target']
@@ -202,12 +202,14 @@ def main() -> None:
     print(f'The number of true cases in y_test:  {(y_test == 1).sum()}')
 
     # class weights
-    beta = 0.999
+    beta = (len(x_train)-1)/len(x_train)
+    print(f"Beta{beta}")
     class_weights = utils.get_class_balanced_weights(y_train, beta)
+    print(f"class weights: {class_weights}")
+
 
     auc_global, fed_prob = federated_learning(x_train, y_train_one_hot, x_test, y_test, institution, class_weights)
     auc_local, cen_prob = centralized_learning(x_train, y_train_one_hot, x_test, y_test, institution, class_weights)
-
 
     auc = {
         'global auc': np.array(auc_global).astype(float),
@@ -228,6 +230,17 @@ def main() -> None:
 
     middle = pd.DataFrame(result)
     middle.to_csv(f"middle_{institution}.csv",index=False)
+
+    # Saving Baseline Models Results 
+    hospital = 'Taiwan' if institution == 1 else 'USA'
+    baseline = {
+        f'Model | {hospital} | seed={seed}': ['Federated Learning', 'Localized Learning'],
+        'auc': [np.array(auc_global).astype(float), np.array(auc_local).astype(float)]
+    }
+    baseline_results = pd.DataFrame(baseline)
+    baseline_results.to_csv('Results/Results_Baseline.csv', mode='a', index=False)
+    print("Results saved to Results_Baseline.csv")
+
 
 
 

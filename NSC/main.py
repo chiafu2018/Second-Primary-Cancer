@@ -2,19 +2,20 @@ import math
 import numpy as np
 import pandas as pd
 import time
-import matplotlib.pyplot as plt
 from sklearn.model_selection import KFold
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, matthews_corrcoef, roc_auc_score, roc_curve
 import utils
 import tensorflow as tf
-from imblearn.over_sampling import SMOTE
+import os 
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense, Dropout, BatchNormalization
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.callbacks import ReduceLROnPlateau
 from tensorflow.keras.utils import to_categorical
 
-tf.debugging.set_log_device_placement(False)
+# tf.debugging.set_log_device_placement(False)
+os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+
 
 from abc import ABC, abstractmethod
 
@@ -38,7 +39,7 @@ class SeeSawingWeights(Classifier):
         self.f_global = f_global
         self.f_local = f_local
         self.inflection_point = 0
-        self.convergence_number = 25
+        self.convergence_number = 20
         self.loss = []
         
     def fit(self, X, y):
@@ -107,12 +108,7 @@ class SeeSawingWeights(Classifier):
         print("New server weights:", self.ser_weight)
         print("New local weights:", self.loc_weight)
 
-        plt.plot(np.arange(self.epoch), self.loss)
-        plt.title('Model loss -- seesawing weights')
-        plt.ylabel('Loss')
-        plt.xlabel('Epoch')
-        plt.legend(['Train'], loc = 'upper left')
-        plt.show()
+        # utils.draw_loss_function(history=(np.arange(self.epoch), self.loss), name = 'seesawing weights')
 
         end_time = time.time()
         execution_time = end_time - start_time
@@ -162,11 +158,17 @@ class NeuralNetwork(Classifier):
         self.epoch = epoch
         self.learning_rate = learning_rate
         self.model = Sequential()
-        self.model.add(Dense(12, activation='relu', input_shape=(4,)))
-        self.model.add(BatchNormalization())
-        self.model.add(Dense(6, activation='relu'))
+        self.model.add(Dense(32, activation='relu', input_shape=(4,)))
         self.model.add(BatchNormalization())
         self.model.add(Dropout(0.2))
+        self.model.add(Dense(16, activation='relu'))
+        self.model.add(BatchNormalization())
+        self.model.add(Dropout(0.2))
+        self.model.add(Dense(8, activation='relu'))
+        self.model.add(BatchNormalization())
+        self.model.add(Dropout(0.2))
+        self.model.add(Dense(4, activation='relu'))
+        self.model.add(BatchNormalization())
         self.model.add(Dense(2, activation='softmax'))
         self.model.compile(optimizer=Adam(learning_rate=self.learning_rate), loss="categorical_crossentropy", metrics=['accuracy'])
 
@@ -174,17 +176,12 @@ class NeuralNetwork(Classifier):
     def fit(self, X, y):
         start_time = time.time()
 
-        beta = 0.999
+        beta = (len(X)-1)/len(X)
         class_weights = utils.get_class_balanced_weights(y, beta)
-        lr_scheduler = ReduceLROnPlateau(monitor='loss', factor=0.5, patience=5, min_lr=0.00005)
+        lr_scheduler = ReduceLROnPlateau(monitor='loss', factor=0.5, patience=5, min_lr=0.0000005)
         history = self.model.fit(X, to_categorical(y, num_classes=2), epochs=self.epoch, class_weight=class_weights, callbacks=[lr_scheduler])
 
-        plt.plot(history.history['loss'])
-        plt.title('Model loss -- NN network')
-        plt.ylabel('Loss')
-        plt.xlabel('Epoch')
-        plt.legend(['Train'], loc = 'upper left')
-        plt.show()
+        # utils.draw_loss_function(history=history, name='NN network')
 
         end_time = time.time()
         execution_time = end_time - start_time
@@ -220,13 +217,20 @@ def evaluate_model(model, X_test, y_test, training_time):
         'precision': precision,
         'recall': recall,
         'mcc': mcc,
-        # 'training time': training_time,
+        'training time': training_time,
         'auc': auc
     }
 
 
 def main():
+    '''
+    If you use the script to run this program, where you can test multiple seeds per time. You need to comment 
     institution = int(input("Please choose a hospital: 1 for Taiwan, 2 for US (SEER Database): "))
+    Otherwise, you need to comment, where you can only test for one seed.
+    seed, institution = utils.parse_argument_for_running_script()
+    '''
+    seed, institution = utils.parse_argument_for_running_script()
+    # institution = int(input("Please choose a hospital: 1 for Taiwan, 2 for US (SEER Database): "))
     
     df = pd.read_csv(f'middle_{institution}.csv')
     X_train, y_train = df.drop('Outcome', axis=1), df['Outcome']
@@ -236,11 +240,11 @@ def main():
     f_local = df_init['local auc'].iloc[0]
 
     models = {
-        # 'SSW': SeeSawingWeights(epoch = 30, f_global = f_global, f_local = f_local),
+        'SSW': SeeSawingWeights(epoch = 30, f_global = f_global, f_local = f_local),
         'NNs': NeuralNetwork(epoch = 300, learning_rate = 0.003)
     }
 
-    kf = KFold(n_splits=4, random_state=42, shuffle=True)
+    kf = KFold(n_splits=4, random_state=seed, shuffle=True)
     cv_results = []
 
     for name, model in models.items():
@@ -260,11 +264,16 @@ def main():
     all_results_df = pd.concat([cv_results_df, avg_results], ignore_index=True)
     all_results_df = all_results_df[['model', 'accuracy', 'f1', 'precision', 'recall', 'mcc', 'auc']]
 
-    print("Cross-validation results:")
-    print(all_results_df)
+    # print("Cross-validation results:")
+    # print(all_results_df)
 
-    # all_results_df.to_csv('Results/cv_results.csv', index=False)
-    # print("Cross-validation results with averages saved to cv_results.csv")
+
+    # Saving NSC Models Results 
+    hospital = 'Taiwan' if institution == 1 else 'USA'
+    avg_results = avg_results[['model', 'auc', 'training time']]
+    avg_results.rename(columns={'model': f'Model | {hospital} | seed={seed}'}, inplace=True)
+    avg_results.to_csv('Results/Results_NSC.csv', mode='a', index=False)
+    print("Cross-validation results with averages saved to Results_NSC.csv")
 
 if __name__ == "__main__":
     main()
