@@ -6,7 +6,7 @@ If you use linux to run this file, please change the command from python to pyth
 '''
 import subprocess
 
-for seed in range(55, 58):
+for seed in range(20, 50):
     process1 = subprocess.Popen(['python', 'server.py'])
 
     process2 = subprocess.Popen(f'python train.py --seed={seed} --hospital=1', shell=True)
