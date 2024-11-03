@@ -1,7 +1,7 @@
+import os
 import flwr as fl
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense, Dropout, BatchNormalization
-import os
 
 os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
 

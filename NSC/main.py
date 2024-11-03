@@ -1,21 +1,20 @@
+import os 
+import time
 import math
 import numpy as np
 import pandas as pd
-import time
-from sklearn.model_selection import KFold
-from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, matthews_corrcoef, roc_auc_score, roc_curve
-import utils
 import tensorflow as tf
-import os 
+from sklearn.model_selection import KFold, train_test_split
+from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, matthews_corrcoef, roc_auc_score, roc_curve
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense, Dropout, BatchNormalization
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.callbacks import ReduceLROnPlateau
 from tensorflow.keras.utils import to_categorical
+import utils
 
 # tf.debugging.set_log_device_placement(False)
 os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
-
 
 from abc import ABC, abstractmethod
 
@@ -42,7 +41,7 @@ class SeeSawingWeights(Classifier):
         self.convergence_number = 20
         self.loss = []
         
-    def fit(self, X, y):
+    def fit(self, X, y, institution, seed):
         start_time = time.time()
         lr = 1/len(X)
         self.ser_weight = self.f_global / (self.f_global + self.f_local)
@@ -52,7 +51,6 @@ class SeeSawingWeights(Classifier):
         for cur in range(self.epoch):
             loss = 0
             # LAEARNING RATE SCHEDULER
-            # lr = self.scheduler(lr, math.exp(-cur), 3)
             lr *= math.exp(-cur/self.convergence_number)
             test_array = []
 
@@ -112,21 +110,10 @@ class SeeSawingWeights(Classifier):
 
         end_time = time.time()
         execution_time = end_time - start_time
+
+        utils.featureInterpreter_SSW(self.ser_weight, self.loc_weight, institution, seed)
+
         return execution_time
-
-
-    def scheduler(self, learning_rate, factor, penalty):
-        if len(self.loss) > penalty:
-            not_improving = 0
-            for i in range(penalty):
-                if self.loss[-1 - i] >= self.loss[-2 - i]: 
-                    not_improving += 1
-
-            if not_improving > penalty / 2:
-                return learning_rate * factor
-        
-        return learning_rate
-
 
     def predict(self, X, y_test):
         y = []
@@ -173,7 +160,7 @@ class NeuralNetwork(Classifier):
         self.model.compile(optimizer=Adam(learning_rate=self.learning_rate), loss="categorical_crossentropy", metrics=['accuracy'])
 
 
-    def fit(self, X, y):
+    def fit(self, X, y, institution, seed):
         start_time = time.time()
 
         beta = (len(X)-1)/len(X)
@@ -184,7 +171,10 @@ class NeuralNetwork(Classifier):
         # utils.draw_loss_function(history=history, name='NN network')
 
         end_time = time.time()
-        execution_time = end_time - start_time
+        execution_time = end_time - start_time    
+
+        utils.featureInterpreter('NNs', self.model, X.astype(float), institution, 'nsc' , seed)
+
         return execution_time
 
     def predict(self, X, y_test):
@@ -225,15 +215,19 @@ def evaluate_model(model, X_test, y_test, training_time):
 def main():
     '''
     If you use the script to run this program, where you can test multiple seeds per time. You need to comment 
-    institution = int(input("Please choose a hospital: 1 for Taiwan, 2 for US (SEER Database): "))
+    LINE: institution = int(input("Please choose a hospital: 1 for Taiwan, 2 for US (SEER Database): "))
     Otherwise, you need to comment, where you can only test for one seed.
-    seed, institution = utils.parse_argument_for_running_script()
+    LINE: seed, institution = utils.parse_argument_for_running_script()
     '''
     seed, institution = utils.parse_argument_for_running_script()
     # institution = int(input("Please choose a hospital: 1 for Taiwan, 2 for US (SEER Database): "))
     
     df = pd.read_csv(f'middle_{institution}.csv')
-    X_train, y_train = df.drop('Outcome', axis=1), df['Outcome']
+
+    trainset, testset = train_test_split(df, test_size=0.33, stratify=df['Outcome'], random_state=seed)
+
+    x_train, y_train = trainset.drop(columns=['Outcome']), trainset['Outcome']
+    x_test, y_test = testset.drop(columns=['Outcome']), testset['Outcome']
 
     df_init = pd.read_csv(f'init_{institution}.csv')
     f_global = df_init['global auc'].iloc[0]
@@ -244,36 +238,26 @@ def main():
         'NNs': NeuralNetwork(epoch = 300, learning_rate = 0.003)
     }
 
-    kf = KFold(n_splits=4, random_state=seed, shuffle=True)
-    cv_results = []
+    all_results = []
 
     for name, model in models.items():
-        for fold_idx, (train_index, val_index) in enumerate(kf.split(X_train), start=1):
-            X_train_fold, X_val_fold = X_train.iloc[train_index], X_train.iloc[val_index]
-            y_train_fold, y_val_fold = y_train.iloc[train_index], y_train.iloc[val_index]
+        training_time = model.fit(x_train, y_train, institution, seed)
+        result = evaluate_model(model, x_test, y_test, training_time)
+        result['model'] = name
+        all_results.append(result)
 
-            training_time = model.fit(X_train_fold, y_train_fold)
-            fold_result = evaluate_model(model, X_val_fold, y_val_fold, training_time)
-            fold_result['model'] = name
-            fold_result['fold'] = fold_idx
-            cv_results.append(fold_result)
-
-    cv_results_df = pd.DataFrame(cv_results)
-    avg_results = cv_results_df.groupby('model').mean().reset_index()
-    avg_results['model'] += ' Average'
-    all_results_df = pd.concat([cv_results_df, avg_results], ignore_index=True)
-    all_results_df = all_results_df[['model', 'accuracy', 'f1', 'precision', 'recall', 'mcc', 'auc']]
+    all_results = pd.DataFrame(all_results)
+    all_results = all_results[['model', 'accuracy', 'f1', 'precision', 'recall', 'training time', 'mcc', 'auc']]
 
     # print("Cross-validation results:")
-    # print(all_results_df)
-
+    # print(all_results)
 
     # Saving NSC Models Results 
     hospital = 'Taiwan' if institution == 1 else 'USA'
-    avg_results = avg_results[['model', 'auc', 'training time']]
-    avg_results.rename(columns={'model': f'Model | {hospital} | seed={seed}'}, inplace=True)
-    avg_results.to_csv('Results/Results_NSC.csv', mode='a', index=False)
-    print("Cross-validation results with averages saved to Results_NSC.csv")
+    all_results = all_results[['model', 'auc', 'training time']]
+    all_results.rename(columns={'model': f'Model | {hospital} | seed={seed}'}, inplace=True)
+    all_results.to_csv('Results/Results_NSC.csv', mode='a', index=False)
+    print("results saved to Results_NSC.csv")
 
 if __name__ == "__main__":
     main()

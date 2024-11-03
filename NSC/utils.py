@@ -1,10 +1,13 @@
-import flwr as fl
+import pandas as pd
 import argparse
+import flwr as fl
+import seaborn as sns
 from collections import Counter
 import matplotlib.pyplot as plt
 from sklearn.metrics import roc_auc_score
 from tensorflow.keras.callbacks import ReduceLROnPlateau
 from tensorflow.keras.utils import to_categorical
+import shap
 
 
 class SpcancerClient(fl.client.NumPyClient):
@@ -56,6 +59,7 @@ class SpcancerClient(fl.client.NumPyClient):
         return loss, len(self.x_test), results
 
 
+
 def get_class_balanced_weights(y_train, beta):
     # Count the number of samples for each class
     class_counts = Counter(y_train)
@@ -89,3 +93,37 @@ def parse_argument_for_running_script():
     parser.add_argument('--hospital', type=int, default=1, help='Hospital Data for training')
     args = parser.parse_args()
     return args.seed, args.hospital
+
+
+def featureInterpreter(name, model, x_train, institution, method, seed):
+    hospital = 'Taiwan' if institution == 1 else 'USA'
+
+    background_data = shap.sample(x_train, 100)
+    explainer = shap.KernelExplainer(model.predict, background_data)
+    shap_values = explainer.shap_values(x_train.iloc[299:399, :])
+
+    shap.summary_plot(shap_values, x_train.iloc[299:399, :], show=False)
+
+    plt.subplots_adjust(top=0.85) 
+    plt.title(f'{name} | {hospital} | summary | seed = {seed}')
+    plt.savefig(f'Results/shap/{name}_{hospital}_{seed}.png')
+    plt.close('all')
+
+
+
+def featureInterpreter_SSW(ser_weight, loc_weight, institution, seed):
+    hospital = 'Taiwan' if institution == 1 else 'USA'
+
+    feature_result = pd.DataFrame({
+        'feature': ['global model predict no prob', 'global model predict yes prob', 
+                    'local model predict no prob', 'local model predict yes prob'],
+        'weight': [ser_weight, ser_weight, loc_weight, loc_weight]
+    })
+    
+    plt.subplots_adjust(left=0.35)
+    sns.barplot(x='weight', y='feature', data=feature_result)
+    plt.xlabel("Weight")
+
+    plt.title(f'SSW | {hospital} | summary | seed = {seed}')
+    plt.savefig(f'Results/shap/SSW_{hospital}_{seed}.png')
+    plt.close('all')

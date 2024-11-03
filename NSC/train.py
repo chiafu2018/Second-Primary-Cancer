@@ -11,13 +11,10 @@ from tensorflow.keras.callbacks import ReduceLROnPlateau
 from tensorflow.keras.utils import to_categorical
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score
-import matplotlib.pyplot as plt
 import utils
-import shap
 
 # tf.debugging.set_log_device_placement(False)
 os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
-
 
 
 '''''''''''''''''''''''''''''''''' Feature Groups '''''''''''''''''''''''''''''''''''''''
@@ -37,47 +34,7 @@ seer_feature = ['Income', 'Area', 'Race']
 
 ''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
 
-def featureIntepreter(model, x_train, institution):
-    # Shap Explainer
-    background_data = shap.sample(x_train, 300)  
-    explainer = shap.KernelExplainer(model, background_data, link = 'logit')
-
-    # Evaluate Single data & let feature name sort in lex order
-    shap_values_single = explainer.shap_values(x_train.iloc[299])
-    shap_values_single = sorted(list(zip(x_train.iloc[299].index, shap_values_single[0])))
-
-    print(f"Shap value: (single)")
-    for feature, value in shap_values_single:
-        print(f"{feature} : {value}")
-
-
-    # Evaluate Multiple data & average the results
-    shap_values_multi = np.mean(explainer.shap_values(x_train.iloc[299:399,:]), axis=0)
-    shap_values_multi = sorted(list(zip(x_train.iloc[299].index, shap_values_multi[0])))
-
-    print(f"Shap value: (Mulitple cases average)")
-    for feature, value in shap_values_multi:
-        print(f"{feature} : {value}")
-
-
-    # Separate the sorted pairs into two lists: features and values
-    sorted_features, sorted_values = zip(*shap_values_multi)
-
-    # Plot the sorted SHAP values into a bar chart
-    plt.figure(figsize=(10, 8))
-    plt.barh(sorted_features, sorted_values, color='blue')
-    plt.xlabel('SHAP Value')
-    plt.ylabel('Feature')
-
-    if institution == 1:
-        plt.title('SHAP Values for Taiwan Features')
-    else:
-        plt.title('SHAP Values for USA Features')
-    plt.show()
-
-
-
-def federated_learning(x_train, y_train, x_test, y_test, institution, class_weights):
+def federated_learning(x_train, y_train, x_test, y_test, institution, class_weights, seed):
 
     x_train = x_train[global_feature]
     x_test = x_test[global_feature]
@@ -118,12 +75,13 @@ def federated_learning(x_train, y_train, x_test, y_test, institution, class_weig
     auc = roc_auc_score(y_test, pred_prob[:, 1])
     print(f"Global model auc score: {auc}")
 
-    # featureIntepreter(model, x_train.astype(np.int32), institution)
+    # Passing seed from main is only used in here
+    utils.featureInterpreter('Federated Learning', model, x_train.astype(np.int32), institution, 'baseline', seed)
 
     return auc, pred_prob
 
 
-def centralized_learning(x_train, y_train, x_test, y_test, institution, class_weights):
+def localized_learning(x_train, y_train, x_test, y_test, institution, class_weights, seed):
  
     col_exclude_tw = ['Radiation', 'Chemotherapy', 'Surgery']
     col_exclude_seer = ['Radiation', 'Chemotherapy', 'Surgery']
@@ -155,13 +113,14 @@ def centralized_learning(x_train, y_train, x_test, y_test, institution, class_we
     lr_scheduler = ReduceLROnPlateau(monitor='loss', factor=0.5, patience=5, min_lr=0.000005)
     history = model.fit(x_train.astype(float), y_train, epochs = 300, class_weight = class_weights, callbacks=[lr_scheduler])
 
-    # utils.draw_loss_function(history=history, name="centralized learning")
+    # utils.draw_loss_function(history=history, name="localized learning")
 
     pred_prob = model.predict(x_test.astype(float))
     auc = roc_auc_score(y_test, pred_prob[:, 1])
     print(f"Local model AUC score: {auc}")
 
-    # featureIntepreter(model, x_train.astype(np.int32), institution)
+    # Passing seed from main is only used in here
+    utils.featureInterpreter('Localized Learning', model, x_train.astype(np.int32), institution, 'baseline', seed)
 
     return auc, pred_prob
 
@@ -169,9 +128,9 @@ def centralized_learning(x_train, y_train, x_test, y_test, institution, class_we
 def main() -> None:  
     '''
     If you use the script to run this program, where you can test multiple seeds per time. You need to comment 
-    institution = int(input("Please choose a hospital: 1 for Taiwan, 2 for US (SEER Database): "))
+    LINE: institution = int(input("Please choose a hospital: 1 for Taiwan, 2 for US (SEER Database): "))
     Otherwise, you need to comment, where you can only test for one seed.
-    seed, institution = utils.parse_argument_for_running_script()
+    LINE: seed, institution = utils.parse_argument_for_running_script()
     '''
     seed, institution = utils.parse_argument_for_running_script()
     # institution = int(input("Please choose a hospital: 1 for Taiwan, 2 for US (SEER Database): "))
@@ -188,7 +147,7 @@ def main() -> None:
     columns.append('Target')
     df = df[columns]
 
-    trainset, testset = train_test_split(df, test_size=0.4, stratify=df['Target'], random_state=seed)
+    trainset, testset = train_test_split(df, test_size=0.3, stratify=df['Target'], random_state=seed)
 
     x_train, y_train = trainset.drop(columns=['Target']), trainset['Target']
     x_test, y_test = testset.drop(columns=['Target']), testset['Target']
@@ -208,8 +167,8 @@ def main() -> None:
     print(f"class weights: {class_weights}")
 
 
-    auc_global, fed_prob = federated_learning(x_train, y_train_one_hot, x_test, y_test, institution, class_weights)
-    auc_local, cen_prob = centralized_learning(x_train, y_train_one_hot, x_test, y_test, institution, class_weights)
+    auc_global, fed_prob = federated_learning(x_train, y_train_one_hot, x_test, y_test, institution, class_weights, seed)
+    auc_local, cen_prob = localized_learning(x_train, y_train_one_hot, x_test, y_test, institution, class_weights, seed)
 
     auc = {
         'global auc': np.array(auc_global).astype(float),
@@ -240,7 +199,6 @@ def main() -> None:
     baseline_results = pd.DataFrame(baseline)
     baseline_results.to_csv('Results/Results_Baseline.csv', mode='a', index=False)
     print("Results saved to Results_Baseline.csv")
-
 
 
 
