@@ -92,7 +92,7 @@ def parse_argument_for_running_script():
     parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility')
     parser.add_argument('--hospital', type=int, default=1, help='Hospital Data for training')
     args = parser.parse_args()
-    return args.seed, args.hospital
+    return args.hospital, args.seed
 
 
 def featureInterpreter(name, model, x_train, institution, method, seed):
@@ -102,7 +102,11 @@ def featureInterpreter(name, model, x_train, institution, method, seed):
     explainer = shap.KernelExplainer(model.predict, background_data)
     shap_values = explainer.shap_values(x_train.iloc[299:399, :])
 
-    shap.summary_plot(shap_values, x_train.iloc[299:399, :], show=False)
+    # shap summary plot 
+    # shap.summary_plot(shap_values, x_train.iloc[299:399, :], show=False)
+    
+    # shap summary beeswarm plot (yes class)
+    shap.summary_plot(shap_values[1], x_train.iloc[299:399, :], show=False)
 
     plt.subplots_adjust(top=0.85) 
     plt.title(f'{name} | {hospital} | summary | seed = {seed}')

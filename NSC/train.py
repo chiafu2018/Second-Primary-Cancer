@@ -10,10 +10,11 @@ from tensorflow.keras.layers import BatchNormalization
 from tensorflow.keras.callbacks import ReduceLROnPlateau
 from tensorflow.keras.utils import to_categorical
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import roc_auc_score, f1_score, average_precision_score, precision_recall_curve, auc
 import utils
+import matplotlib.pyplot as plt
 
-# tf.debugging.set_log_device_placement(False)
+
 os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
 
 
@@ -55,7 +56,6 @@ def federated_learning(x_train, y_train, x_test, y_test, institution, class_weig
     x_train = x_train[global_feature_en]
     x_test = x_test[global_feature_en]
 
-
     # Load and compile Keras model
     opt_adam = Adam(learning_rate = 0.003)
     model = Sequential() 
@@ -71,14 +71,17 @@ def federated_learning(x_train, y_train, x_test, y_test, institution, class_weig
     client_hospital = utils.SpcancerClient(model, x_train, y_train, x_test, y_test, class_weights)
     fl.client.start_numpy_client("127.0.0.1:6001", client=client_hospital)
 
+    # Evaluate Models 
     pred_prob = model.predict(x_test.astype(float))
-    auc = roc_auc_score(y_test, pred_prob[:, 1])
-    print(f"Global model auc score: {auc}")
+    auroc = roc_auc_score(y_test, pred_prob[:, 1])
+
+    precision, recall, _ = precision_recall_curve(y_test, pred_prob[:, 1])
+    auprc = auc(recall, precision)
 
     # Passing seed from main is only used in here
     utils.featureInterpreter('Federated Learning', model, x_train.astype(np.int32), institution, 'baseline', seed)
 
-    return auc, pred_prob
+    return auroc, auprc, pred_prob
 
 
 def localized_learning(x_train, y_train, x_test, y_test, institution, class_weights, seed):
@@ -113,27 +116,31 @@ def localized_learning(x_train, y_train, x_test, y_test, institution, class_weig
     lr_scheduler = ReduceLROnPlateau(monitor='loss', factor=0.5, patience=5, min_lr=0.000005)
     history = model.fit(x_train.astype(float), y_train, epochs = 300, class_weight = class_weights, callbacks=[lr_scheduler])
 
+    # Draw Loss funciton 
     # utils.draw_loss_function(history=history, name="localized learning")
-
+    
+    # Evaluate Models 
     pred_prob = model.predict(x_test.astype(float))
-    auc = roc_auc_score(y_test, pred_prob[:, 1])
-    print(f"Local model AUC score: {auc}")
+    auroc = roc_auc_score(y_test, pred_prob[:, 1])
+
+    precision, recall, _ = precision_recall_curve(y_test, pred_prob[:, 1])
+    auprc = auc(recall, precision)
 
     # Passing seed from main is only used in here
     utils.featureInterpreter('Localized Learning', model, x_train.astype(np.int32), institution, 'baseline', seed)
 
-    return auc, pred_prob
+    return auroc, auprc, pred_prob
 
 
 def main() -> None:  
     '''
     If you use the script to run this program, where you can test multiple seeds per time. You need to comment 
-    LINE: institution = int(input("Please choose a hospital: 1 for Taiwan, 2 for US (SEER Database): "))
-    Otherwise, you need to comment, where you can only test for one seed.
-    LINE: seed, institution = utils.parse_argument_for_running_script()
+    LINE: institution, seed = int(input("Please choose a hospital: 1 for Taiwan, 2 for US (SEER Database): ")), 42
+    Otherwise, you need to comment the following line, where you can only test for one seed.
+    LINE: institution, seed = utils.parse_argument_for_running_script()
     '''
-    seed, institution = utils.parse_argument_for_running_script()
-    # institution = int(input("Please choose a hospital: 1 for Taiwan, 2 for US (SEER Database): "))
+    institution, seed = utils.parse_argument_for_running_script()
+    # institution, seed = int(input("Please choose a hospital: 1 for Taiwan, 2 for US (SEER Database): ")), 42
 
     columns = list(global_feature)
 
@@ -147,12 +154,11 @@ def main() -> None:
     columns.append('Target')
     df = df[columns]
 
-    trainset, testset = train_test_split(df, test_size=0.3, stratify=df['Target'], random_state=seed)
+    trainset, testset = train_test_split(df, test_size=0.4, stratify=df['Target'], random_state=seed)
 
     x_train, y_train = trainset.drop(columns=['Target']), trainset['Target']
     x_test, y_test = testset.drop(columns=['Target']), testset['Target']
     y_train_one_hot = to_categorical(y_train, num_classes=2)
-
 
     print(f'------------------------{f"Name of your Institution: {institution}"}------------------------')
     print(f"x_train (data number, feature number): {x_train.shape}")
@@ -166,18 +172,17 @@ def main() -> None:
     class_weights = utils.get_class_balanced_weights(y_train, beta)
     print(f"class weights: {class_weights}")
 
+    auroc_global, auprc_global, fed_prob = federated_learning(x_train, y_train_one_hot, x_test, y_test, institution, class_weights, seed)
+    auroc_local, auprc_local, cen_prob = localized_learning(x_train, y_train_one_hot, x_test, y_test, institution, class_weights, seed)
 
-    auc_global, fed_prob = federated_learning(x_train, y_train_one_hot, x_test, y_test, institution, class_weights, seed)
-    auc_local, cen_prob = localized_learning(x_train, y_train_one_hot, x_test, y_test, institution, class_weights, seed)
-
-    auc = {
-        'global auc': np.array(auc_global).astype(float),
-        'local auc': np.array(auc_local).astype(float)
+    auroc = {
+        'global auroc': np.array(auroc_global).astype(float),
+        'local auroc': np.array(auroc_local).astype(float)
     }
 
-    auc_csv = pd.DataFrame(auc, index=[0])
-    print(auc_csv)
-    auc_csv.to_csv(f"init_{institution}.csv",index=False)
+    auroc_csv = pd.DataFrame(auroc, index=[0])
+    print(auroc_csv)
+    auroc_csv.to_csv(f"init_{institution}.csv",index=False)
 
     result = {
         'global model predict yes prob': fed_prob[:,1],
@@ -194,12 +199,12 @@ def main() -> None:
     hospital = 'Taiwan' if institution == 1 else 'USA'
     baseline = {
         f'Model | {hospital} | seed={seed}': ['Federated Learning', 'Localized Learning'],
-        'auc': [np.array(auc_global).astype(float), np.array(auc_local).astype(float)]
+        'auroc': [np.array(auroc_global).astype(float), np.array(auroc_local).astype(float)],
+        'auprc': [np.array(auprc_global).astype(float), np.array(auprc_local).astype(float)]
     }
     baseline_results = pd.DataFrame(baseline)
     baseline_results.to_csv('Results/Results_Baseline.csv', mode='a', index=False)
     print("Results saved to Results_Baseline.csv")
-
 
 
 if __name__ == "__main__":

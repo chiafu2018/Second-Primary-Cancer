@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import tensorflow as tf
 from sklearn.model_selection import KFold, train_test_split
-from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, matthews_corrcoef, roc_auc_score, roc_curve
+from sklearn.metrics import roc_auc_score, roc_curve, precision_recall_curve, auc
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense, Dropout, BatchNormalization
 from tensorflow.keras.optimizers import Adam
@@ -13,7 +13,6 @@ from tensorflow.keras.callbacks import ReduceLROnPlateau
 from tensorflow.keras.utils import to_categorical
 import utils
 
-# tf.debugging.set_log_device_placement(False)
 os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
 
 from abc import ABC, abstractmethod
@@ -30,22 +29,21 @@ class Classifier(ABC):
 
 # Implement the seesawing weights algorithm 
 class SeeSawingWeights(Classifier):
-    def __init__(self, epoch, f_global, f_local):
+    def __init__(self, epoch, auc_global, auc_local):
         self.model = None
         self.epoch = epoch
         self.ser_weight = 0.0
         self.loc_weight = 0.0
-        self.f_global = f_global
-        self.f_local = f_local
-        self.inflection_point = 0
+        self.auc_global = auc_global
+        self.auc_local = auc_local
         self.convergence_number = 20
         self.loss = []
         
     def fit(self, X, y, institution, seed):
         start_time = time.time()
         lr = 1/len(X)
-        self.ser_weight = self.f_global / (self.f_global + self.f_local)
-        self.loc_weight = self.f_local / (self.f_global + self.f_local)
+        self.ser_weight = self.auc_global / (self.auc_global + self.auc_local)
+        self.loc_weight = self.auc_local / (self.auc_global + self.auc_local)
         self.loss = []
 
         for cur in range(self.epoch):
@@ -71,7 +69,7 @@ class SeeSawingWeights(Classifier):
                     predict_correct = True
                     loss+=yes_prob
 
-                if ((not predict_correct) or (cur<self.inflection_point)):
+                if (not predict_correct):
                     cg = row.iloc[0] if y[index] == 1 else row.iloc[1]
                     cl = row.iloc[2] if y[index] == 1 else row.iloc[3]
                     epsilon_global = math.ceil(max(row.iloc[0], row.iloc[1]) - cg)
@@ -102,15 +100,13 @@ class SeeSawingWeights(Classifier):
 
             self.loss.append(loss)
 
-
         print("New server weights:", self.ser_weight)
         print("New local weights:", self.loc_weight)
-
-        # utils.draw_loss_function(history=(np.arange(self.epoch), self.loss), name = 'seesawing weights')
 
         end_time = time.time()
         execution_time = end_time - start_time
 
+        # utils.draw_loss_function(history=(np.arange(self.epoch), self.loss), name = 'seesawing weights')
         utils.featureInterpreter_SSW(self.ser_weight, self.loc_weight, institution, seed)
 
         return execution_time
@@ -123,8 +119,8 @@ class SeeSawingWeights(Classifier):
             pred_prob.append(yes_prob)
 
         fpr, tpr, threshold = roc_curve(y_test, pred_prob)
-        optimal_index1 = np.argmax(tpr - fpr)
-        y = [1 if prob >= threshold[optimal_index1] else 0 for prob in pred_prob]
+        optimal_index = np.argmax(tpr - fpr)
+        y = [1 if prob >= threshold[optimal_index] else 0 for prob in pred_prob]
 
         return y
 
@@ -140,20 +136,14 @@ class SeeSawingWeights(Classifier):
     
 
 
-class NeuralNetwork(Classifier):
+class DualPerceptionNet(Classifier):
     def __init__(self, epoch, learning_rate):
         self.epoch = epoch
         self.learning_rate = learning_rate
         self.model = Sequential()
-        self.model.add(Dense(32, activation='relu', input_shape=(4,)))
+        self.model.add(Dense(8, activation='relu', input_shape=(4,)))
         self.model.add(BatchNormalization())
-        self.model.add(Dropout(0.2))
-        self.model.add(Dense(16, activation='relu'))
-        self.model.add(BatchNormalization())
-        self.model.add(Dropout(0.2))
-        self.model.add(Dense(8, activation='relu'))
-        self.model.add(BatchNormalization())
-        self.model.add(Dropout(0.2))
+        self.model.add(Dropout(0.1))
         self.model.add(Dense(4, activation='relu'))
         self.model.add(BatchNormalization())
         self.model.add(Dense(2, activation='softmax'))
@@ -168,12 +158,11 @@ class NeuralNetwork(Classifier):
         lr_scheduler = ReduceLROnPlateau(monitor='loss', factor=0.5, patience=5, min_lr=0.0000005)
         history = self.model.fit(X, to_categorical(y, num_classes=2), epochs=self.epoch, class_weight=class_weights, callbacks=[lr_scheduler])
 
-        # utils.draw_loss_function(history=history, name='NN network')
-
         end_time = time.time()
         execution_time = end_time - start_time    
 
-        utils.featureInterpreter('NNs', self.model, X.astype(float), institution, 'nsc' , seed)
+        # utils.draw_loss_function(history=history, name='NN network')
+        utils.featureInterpreter('DPN', self.model, X.astype(float), institution, 'nsc' , seed)
 
         return execution_time
 
@@ -192,35 +181,28 @@ def evaluate_model(model, X_test, y_test, training_time):
     proba = model.predict_proba(X_test)
 
     if np.sum(y_test):
-        accuracy = accuracy_score(y_test, predictions)
-        f1 = f1_score(y_test, predictions)
-        precision = precision_score(y_test, predictions)
-        recall = recall_score(y_test, predictions)
-        mcc = matthews_corrcoef(y_test, predictions)
-        auc = roc_auc_score(y_test, proba)
+        auroc = roc_auc_score(y_test, proba)
+        precision, recall, _ = precision_recall_curve(y_test, proba)
+        auprc = auc(recall, precision)
     else:
-        accuracy, f1, precision, recall, mcc, auc = None, None, None, None, None, None
+        auroc, auprc = None, None
 
     return {
-        'accuracy': accuracy,
-        'f1': f1,
-        'precision': precision,
-        'recall': recall,
-        'mcc': mcc,
-        'training time': training_time,
-        'auc': auc
+        'auroc': auroc,
+        'auprc': auprc,
+        'training time': training_time
     }
 
 
 def main():
     '''
     If you use the script to run this program, where you can test multiple seeds per time. You need to comment 
-    LINE: institution = int(input("Please choose a hospital: 1 for Taiwan, 2 for US (SEER Database): "))
-    Otherwise, you need to comment, where you can only test for one seed.
-    LINE: seed, institution = utils.parse_argument_for_running_script()
+    LINE: institution, seed = int(input("Please choose a hospital: 1 for Taiwan, 2 for US (SEER Database): ")), 42
+    Otherwise, you need to comment the following line, where you can only test for one seed.
+    LINE: institution, seed = utils.parse_argument_for_running_script()
     '''
-    seed, institution = utils.parse_argument_for_running_script()
-    # institution = int(input("Please choose a hospital: 1 for Taiwan, 2 for US (SEER Database): "))
+    institution, seed = utils.parse_argument_for_running_script()
+    # institution, seed = int(input("Please choose a hospital: 1 for Taiwan, 2 for US (SEER Database): ")), 42
     
     df = pd.read_csv(f'middle_{institution}.csv')
 
@@ -230,12 +212,12 @@ def main():
     x_test, y_test = testset.drop(columns=['Outcome']), testset['Outcome']
 
     df_init = pd.read_csv(f'init_{institution}.csv')
-    f_global = df_init['global auc'].iloc[0]
-    f_local = df_init['local auc'].iloc[0]
+    auc_global = df_init['global auroc'].iloc[0]
+    auc_local = df_init['local auroc'].iloc[0]
 
     models = {
-        'SSW': SeeSawingWeights(epoch = 30, f_global = f_global, f_local = f_local),
-        'NNs': NeuralNetwork(epoch = 300, learning_rate = 0.003)
+        'SSW': SeeSawingWeights(epoch = 30, auc_global = auc_global, auc_local = auc_local),
+        'DPN': DualPerceptionNet(epoch = 300, learning_rate = 0.003)
     }
 
     all_results = []
@@ -246,15 +228,10 @@ def main():
         result['model'] = name
         all_results.append(result)
 
-    all_results = pd.DataFrame(all_results)
-    all_results = all_results[['model', 'accuracy', 'f1', 'precision', 'recall', 'training time', 'mcc', 'auc']]
-
-    # print("Cross-validation results:")
-    # print(all_results)
-
     # Saving NSC Models Results 
     hospital = 'Taiwan' if institution == 1 else 'USA'
-    all_results = all_results[['model', 'auc', 'training time']]
+    all_results = pd.DataFrame(all_results)
+    all_results = all_results[['model', 'auroc', 'auprc', 'training time']]
     all_results.rename(columns={'model': f'Model | {hospital} | seed={seed}'}, inplace=True)
     all_results.to_csv('Results/Results_NSC.csv', mode='a', index=False)
     print("results saved to Results_NSC.csv")
