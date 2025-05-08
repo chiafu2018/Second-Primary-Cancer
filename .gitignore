@@ -1,0 +1,12 @@
+Combine-Loss/__pycache__/
+Combine-Loss/Data_folder/
+Combine-Loss/Results/
+
+Late-Fusion/__pycache__/
+Late-Fusion/Data_folder/
+Late-Fusion/Middle/
+Late-Fusion/Results/
+Late-Fusion/undo/
+
+*.docx 
+*.pptx
