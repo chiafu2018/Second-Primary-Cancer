@@ -2,11 +2,16 @@ Combine-Loss/__pycache__/
 Combine-Loss/Data_folder/
 Combine-Loss/Results/
 
+Continual-HFL/__pycache__/
+Continual-HFL/Data_folder/
+Continual-HFL/Results/
+
 Late-Fusion/__pycache__/
 Late-Fusion/Data_folder/
 Late-Fusion/Middle/
 Late-Fusion/Results/
 Late-Fusion/undo/
+
 
 *.docx 
 *.pptx
