@@ -136,7 +136,6 @@ class PrivateModel(nn.Module):
         self.alpha2 = nn.Parameter(torch.tensor(1.0))
         self.alpha3 = nn.Parameter(torch.tensor(1.0))
         self.alpha4 = nn.Parameter(torch.tensor(1.0))
-        self.alpha5 = nn.Parameter(torch.tensor(1.0))
 
 
     def forward(self, private_input, x1, x2, x3, x4, x5):      
@@ -144,7 +143,7 @@ class PrivateModel(nn.Module):
         x = self.fc2(x) + self.alpha2 * x2
         x = self.fc3(x) + self.alpha3 * x3
         x = self.fc4(x) + self.alpha4 * x4
-        x = F.softmax(self.fc5(x) + self.alpha5 * x5, dim=1)
+        x = F.softmax(self.fc5(x) + x5, dim=1)
         return x
 
 
@@ -179,8 +178,8 @@ def main() -> None:
     Otherwise, you need to comment the following line, so you can only test for one seed.
     LINE: seed, institution = utils.parse_argument_for_running_script()
     '''
-    # institution, seed = utils.parse_argument_for_running_script()
-    institution, seed = int(input("Please choose a hospital: 1 for Taiwan, 2 for US (SEER Database): ")), 23
+    institution, seed = utils.parse_argument_for_running_script()
+    # institution, seed = int(input("Please choose a hospital: 1 for Taiwan, 2 for US (SEER Database): ")), 23
 
     columns = list(global_feature)
 
